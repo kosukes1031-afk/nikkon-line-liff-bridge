@@ -17,23 +17,79 @@
 <script>
 const LIFF_ID='2011369414-JWuEiqsX';
 const GAS_URL='https://script.google.com/macros/s/AKfycbwcz4RQfL9BrId22CofY53McJm8CPQov6GE1Q6pN5PM164nqiB81jqI4xd33pWFCrzw/exec';
+const ALLOWED_ROUTES=new Set(['home','companies','reservation','ticket','tour','tour-direct','tour-later','gate']);
+const PENDING_PARAMS_KEY='nikkon-liff-bridge-pending-v1';
+const PENDING_PARAMS_TTL_MS=10*60*1000;
 const statusEl=document.getElementById('status');
 function show(text){statusEl.innerHTML='<div class="spinner"></div>'+text}
 function fail(error){statusEl.innerHTML='<div class="error"><b>LINE認証を完了できませんでした。</b><br>'+String(error&&error.message||error)+'</div>'}
+function stateParams(rawState){
+  const state=String(rawState||'').trim();
+  if(!state||state.length>2048||/^[a-z][a-z0-9+.-]*:/i.test(state)||state.startsWith('//'))return new URLSearchParams();
+  try{return new URLSearchParams(state.startsWith('?')?state.slice(1):state)}catch(_){return new URLSearchParams()}
+}
+function allowedRoute(value){const route=String(value||'').trim().toLowerCase();return ALLOWED_ROUTES.has(route)?route:'home'}
+function storedParams(){
+  for(const store of [sessionStorage,localStorage])try{
+    const saved=JSON.parse(store.getItem(PENDING_PARAMS_KEY)||'null');
+    if(!saved||!Number.isFinite(saved.savedAt)||Date.now()-saved.savedAt>PENDING_PARAMS_TTL_MS){store.removeItem(PENDING_PARAMS_KEY);continue}
+    const result=new URLSearchParams();
+    ['route','event','action','token','companyId'].forEach(function(name){if(typeof saved[name]==='string'&&saved[name].length<=2048)result.set(name,saved[name])});
+    return result;
+  }catch(_){try{store.removeItem(PENDING_PARAMS_KEY)}catch(_){}}
+  try{
+    const prefix=PENDING_PARAMS_KEY+'=';
+    const raw=String(document.cookie||'').split(';').map(function(part){return part.trim()}).find(function(part){return part.startsWith(prefix)});
+    const saved=raw?JSON.parse(decodeURIComponent(raw.slice(prefix.length))):null;
+    if(saved&&Number.isFinite(saved.savedAt)&&Date.now()-saved.savedAt<=PENDING_PARAMS_TTL_MS){
+      const result=new URLSearchParams();
+      ['route','companyId'].forEach(function(name){if(typeof saved[name]==='string'&&saved[name].length<=2048)result.set(name,saved[name])});
+      return result;
+    }
+  }catch(_){}
+  return new URLSearchParams();
+}
+function rememberParams(p){
+  const saved={savedAt:Date.now()};
+  ['route','event','action','token','companyId'].forEach(function(name){saved[name]=p.get(name)||''});
+  for(const store of [sessionStorage,localStorage])try{store.setItem(PENDING_PARAMS_KEY,JSON.stringify(saved))}catch(_){}
+  const cookieSaved={savedAt:saved.savedAt,route:saved.route,companyId:saved.companyId};
+  document.cookie=PENDING_PARAMS_KEY+'='+encodeURIComponent(JSON.stringify(cookieSaved))+'; Max-Age=600; Path=/nikkon-line-liff-bridge/; SameSite=Lax; Secure';
+}
+function clearStoredParams(){
+  for(const store of [sessionStorage,localStorage])try{store.removeItem(PENDING_PARAMS_KEY)}catch(_){}
+  document.cookie=PENDING_PARAMS_KEY+'=; Max-Age=0; Path=/nikkon-line-liff-bridge/; SameSite=Lax; Secure';
+}
+function loginRedirectUrl(p){
+  const redirect=new URL(location.origin+location.pathname);
+  ['route','event','action','token','companyId'].forEach(function(name){const value=p.get(name);if(value)redirect.searchParams.set(name,value)});
+  return redirect.href;
+}
+function params(){
+  const direct=new URLSearchParams(location.search),nested=stateParams(direct.get('liff.state')),stored=storedParams(),merged=new URLSearchParams(direct);
+  merged.delete('gas'); // PoC専用のGAS宛先切替は本番bridge候補では無効。
+  ['event','action','token','companyId'].forEach(function(name){
+    if(!merged.has(name)&&nested.has(name))merged.set(name,nested.get(name));
+    if(!merged.has(name)&&stored.has(name))merged.set(name,stored.get(name));
+  });
+  const directRoute=direct.get('route')||direct.get('page'),nestedRoute=nested.get('route')||nested.get('page'),storedRoute=stored.get('route');
+  merged.set('route',allowedRoute(directRoute!=null?directRoute:(nestedRoute!=null?nestedRoute:storedRoute)));
+  return merged;
+}
 function addField(form,name,value){const input=document.createElement('input');input.type='hidden';input.name=name;input.value=value||'';form.appendChild(input)}
 async function start(){try{
+  const p=params();rememberParams(p);
   show('LINEへ接続しています…');
   await liff.init({liffId:LIFF_ID,withLoginOnExternalBrowser:true});
-  if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return}
+  if(!liff.isLoggedIn()){liff.login({redirectUri:loginRedirectUrl(p)});return}
   const idToken=liff.getIDToken();
   if(!idToken)throw new Error('LINE本人確認情報を取得できませんでした。');
   show('認証できました。参加者画面を開いています…');
-  const params=new URLSearchParams(location.search);
   const form=document.createElement('form');form.method='POST';form.action=GAS_URL;
   addField(form,'bridgeAction','liffBridge');addField(form,'idToken',idToken);
-  addField(form,'route',params.get('route')||params.get('page')||'home');
-  addField(form,'event',params.get('event')||'');addField(form,'routeAction',params.get('action')||'');addField(form,'token',params.get('token')||'');
-  document.body.appendChild(form);form.submit();
+  addField(form,'route',p.get('route')||'home');
+  addField(form,'event',p.get('event')||'');addField(form,'routeAction',p.get('action')||'');addField(form,'token',p.get('token')||'');addField(form,'companyId',p.get('companyId')||'');
+  document.body.appendChild(form);form.submit();clearStoredParams();
 }catch(error){fail(error)}}
 start();
 </script>
