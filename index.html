@@ -73,7 +73,9 @@ function params(){
     if(!merged.has(name)&&stored.has(name))merged.set(name,stored.get(name));
   });
   const directRoute=direct.get('route')||direct.get('page'),nestedRoute=nested.get('route')||nested.get('page'),storedRoute=stored.get('route');
-  merged.set('route',allowedRoute(directRoute!=null?directRoute:(nestedRoute!=null?nestedRoute:storedRoute)));
+  const route=allowedRoute(directRoute!=null?directRoute:(nestedRoute!=null?nestedRoute:storedRoute));
+  merged.set('route',route);
+  if(route==='home')merged.delete('companyId');
   return merged;
 }
 function addField(form,name,value){const input=document.createElement('input');input.type='hidden';input.name=name;input.value=value||'';form.appendChild(input)}
